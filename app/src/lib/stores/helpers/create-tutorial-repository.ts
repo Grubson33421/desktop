@@ -1,7 +1,7 @@
 import * as Path from 'path'
 
 import { Account } from '../../../models/account'
-import { writeFile, pathExists, ensureDir } from 'fs-extra'
+import { mkdir, writeFile } from 'fs/promises'
 import { API } from '../../api'
 import { APIError } from '../../http'
 import {
@@ -9,13 +9,10 @@ import {
   PushProgressParser,
 } from '../../progress'
 import { git } from '../../git'
-import { friendlyEndpointName } from '../../friendly-endpoint-name'
 import { IRemote } from '../../../models/remote'
+import { getDefaultBranch } from '../../helpers/default-branch'
 import { envForRemoteOperation } from '../../git/environment'
-import {
-  DefaultBranchInGit,
-  DefaultBranchInDesktop,
-} from '../../helpers/default-branch'
+import { pathExists } from '../../path-exists'
 
 const nl = __WIN32__ ? '\r\n' : '\n'
 const InitialReadmeContents =
@@ -50,9 +47,7 @@ async function createAPIRepository(account: Account, name: string) {
         ) {
           throw new Error(
             'You already have a repository named ' +
-              `"${name}" on your account at ${friendlyEndpointName(
-                account
-              )}.\n\n` +
+              `"${name}" on your account at ${account.friendlyEndpoint}.\n\n` +
               'Please delete the repository and try again.'
           )
         }
@@ -70,12 +65,12 @@ async function pushRepo(
   remoteBranchName: string,
   progressCb: (title: string, value: number, description?: string) => void
 ) {
-  const pushTitle = `Pushing repository to ${friendlyEndpointName(account)}`
+  const pushTitle = `Pushing repository to ${account.friendlyEndpoint}`
   progressCb(pushTitle, 0)
 
   const pushOpts = await executionOptionsWithProgress(
     {
-      env: await envForRemoteOperation(account, remote.url),
+      env: await envForRemoteOperation(remote.url),
     },
     new PushProgressParser(),
     progress => {
@@ -107,8 +102,7 @@ export async function createTutorialRepository(
   path: string,
   progressCb: (title: string, value: number, description?: string) => void
 ) {
-  const endpointName = friendlyEndpointName(account)
-  progressCb(`Creating repository on ${endpointName}`, 0)
+  progressCb(`Creating repository on ${account.friendlyEndpoint}`, 0)
 
   if (await pathExists(path)) {
     throw new Error(
@@ -118,15 +112,16 @@ export async function createTutorialRepository(
   }
 
   const repo = await createAPIRepository(account, name)
-  const branch = repo.default_branch ?? DefaultBranchInDesktop
+  const branch = repo.default_branch ?? (await getDefaultBranch())
   progressCb('Initializing local repository', 0.2)
 
-  await ensureDir(path)
-  await git(['init'], path, 'tutorial:init')
+  await mkdir(path, { recursive: true })
 
-  if (branch !== DefaultBranchInGit) {
-    await git(['checkout', '-b', branch], path, 'tutorial:rename-branch')
-  }
+  await git(
+    ['-c', `init.defaultBranch=${branch}`, 'init'],
+    path,
+    'tutorial:init'
+  )
 
   await writeFile(Path.join(path, 'README.md'), InitialReadmeContents)
 

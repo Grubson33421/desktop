@@ -7,7 +7,8 @@ import { CommitOneLine } from '../../models/commit'
 /**
  * Convert two refs into the Git range syntax representing the set of commits
  * that are reachable from `to` but excluding those that are reachable from
- * `from`.
+ * `from`. This will not be inclusive to the `from` ref, see
+ * `revRangeInclusive`.
  *
  * Each parameter can be the commit SHA or a ref name, or specify an empty
  * string to represent HEAD.
@@ -17,6 +18,21 @@ import { CommitOneLine } from '../../models/commit'
  */
 export function revRange(from: string, to: string) {
   return `${from}..${to}`
+}
+
+/**
+ * Convert two refs into the Git range syntax representing the set of commits
+ * that are reachable from `to` but excluding those that are reachable from
+ * `from`. However as opposed to `revRange`, this will also include `from` ref.
+ *
+ * Each parameter can be the commit SHA or a ref name, or specify an empty
+ * string to represent HEAD.
+ *
+ * @param from The start of the range
+ * @param to The end of the range
+ */
+export function revRangeInclusive(from: string, to: string) {
+  return `${from}^..${to}`
 }
 
 /**
@@ -42,7 +58,14 @@ export async function getAheadBehind(
   // `--left-right` annotates the list of commits in the range with which side
   // they're coming from. When used with `--count`, it tells us how many
   // commits we have from the two different sides of the range.
-  const args = ['rev-list', '--left-right', '--count', range, '--']
+  const args = [
+    'rev-list',
+    '--left-right',
+    '--count',
+    '--end-of-options',
+    range,
+    '--',
+  ]
   const result = await git(args, repository.path, 'getAheadBehind', {
     expectedErrors: new Set([GitError.BadRevision]),
   })
@@ -96,6 +119,7 @@ export async function getBranchAheadBehind(
 /**
  * Get a list of commits from the target branch that do not exist on the base
  * branch, ordered how they will be applied to the base branch.
+ * Therefore, this will not include the baseBranchSha commit.
  *
  * This emulates how `git rebase` initially determines what will be applied to
  * the repository.
@@ -103,21 +127,34 @@ export async function getBranchAheadBehind(
  * Returns `null` when the rebase is not possible to perform, because of a
  * missing commit ID
  */
-export async function getCommitsInRange(
+export async function getCommitsBetweenCommits(
   repository: Repository,
   baseBranchSha: string,
   targetBranchSha: string
 ): Promise<ReadonlyArray<CommitOneLine> | null> {
   const range = revRange(baseBranchSha, targetBranchSha)
 
+  return getCommitsInRange(repository, range)
+}
+
+/**
+ * Get a list of commits inside the provided range.
+ *
+ * Returns `null` when it is not possible to perform because of a bad range.
+ */
+export async function getCommitsInRange(
+  repository: Repository,
+  range: string
+): Promise<ReadonlyArray<CommitOneLine> | null> {
   const args = [
     'rev-list',
-    range,
     '--reverse',
     // the combination of these two arguments means each line of the stdout
     // will contain the full commit sha and a commit summary
     `--oneline`,
     `--no-abbrev-commit`,
+    '--end-of-options',
+    range,
     '--',
   ]
 
@@ -128,12 +165,6 @@ export async function getCommitsInRange(
   const result = await git(args, repository.path, 'getCommitsInRange', options)
 
   if (result.gitError === GitError.BadRevision) {
-    // BadRevision can be raised here if git rev-list is unable to resolve a ref
-    // to a commit ID, so we need to signal to the caller that this rebase is
-    // not possible to perform
-    log.warn(
-      'Unable to rebase these branches because one or both of the refs do not exist in the repository'
-    )
     return null
   }
 
@@ -158,4 +189,28 @@ export async function getCommitsInRange(
   }
 
   return commits
+}
+
+/**
+ * Determine if merge commits exist in history after given commit
+ * If commitRef is null, goes back to HEAD of branch.
+ */
+export async function doMergeCommitsExistAfterCommit(
+  repository: Repository,
+  commitRef: string | null
+): Promise<boolean> {
+  const revision = commitRef === null ? 'HEAD' : revRange(commitRef, 'HEAD')
+  const args = [
+    'rev-list',
+    '-1',
+    '--merges',
+    '--end-of-options',
+    revision,
+    '--',
+  ]
+
+  return git(args, repository.path, 'doMergeCommitsExistAfterCommit', {
+    // 128 here means there's no HEAD, i.e we're on an unborn branch
+    successExitCodes: new Set([0, 128]),
+  }).then(x => x.stdout.length > 0)
 }

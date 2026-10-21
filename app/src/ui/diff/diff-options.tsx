@@ -1,14 +1,20 @@
 import * as React from 'react'
 import { Checkbox, CheckboxValue } from '../lib/checkbox'
-import { Octicon, OcticonSymbol } from '../octicons'
+import { Octicon } from '../octicons'
+import * as octicons from '../octicons/octicons.generated'
 import { RadioButton } from '../lib/radio-button'
-import { getBoolean, setBoolean } from '../../lib/local-storage'
-import FocusTrap from 'focus-trap-react'
-import { Options as FocusTrapOptions } from 'focus-trap'
+import {
+  Popover,
+  PopoverAnchorPosition,
+  PopoverDecoration,
+} from '../lib/popover'
+import { Tooltip, TooltipDirection } from '../lib/tooltip'
+import { createObservableRef } from '../lib/observable-ref'
 
 interface IDiffOptionsProps {
-  readonly hideWhitespaceChanges?: boolean
-  readonly onHideWhitespaceChangesChanged?: (
+  readonly isInteractiveDiff: boolean
+  readonly hideWhitespaceChanges: boolean
+  readonly onHideWhitespaceChangesChanged: (
     hideWhitespaceChanges: boolean
   ) => void
 
@@ -20,36 +26,27 @@ interface IDiffOptionsProps {
 }
 
 interface IDiffOptionsState {
-  readonly isOpen: boolean
-  readonly showNewCallout: boolean
+  readonly isPopoverOpen: boolean
 }
-
-const HasSeenSplitDiffKey = 'has-seen-split-diff-option'
 
 export class DiffOptions extends React.Component<
   IDiffOptionsProps,
   IDiffOptionsState
 > {
-  private focusTrapOptions: FocusTrapOptions
+  private innerButtonRef = createObservableRef<HTMLButtonElement>()
   private diffOptionsRef = React.createRef<HTMLDivElement>()
+  private gearIconRef = React.createRef<HTMLSpanElement>()
 
   public constructor(props: IDiffOptionsProps) {
     super(props)
     this.state = {
-      isOpen: false,
-      showNewCallout: getBoolean(HasSeenSplitDiffKey) !== true,
-    }
-
-    this.focusTrapOptions = {
-      allowOutsideClick: true,
-      escapeDeactivates: true,
-      onDeactivate: this.closePopover,
+      isPopoverOpen: false,
     }
   }
 
-  private onTogglePopover = (event: React.FormEvent<HTMLButtonElement>) => {
+  private onButtonClick = (event: React.FormEvent<HTMLButtonElement>) => {
     event.preventDefault()
-    if (this.state.isOpen) {
+    if (this.state.isPopoverOpen) {
       this.closePopover()
     } else {
       this.openPopover()
@@ -58,10 +55,9 @@ export class DiffOptions extends React.Component<
 
   private openPopover = () => {
     this.setState(prevState => {
-      if (!prevState.isOpen) {
-        document.addEventListener('mousedown', this.onDocumentMouseDown)
+      if (!prevState.isPopoverOpen) {
         this.props.onDiffOptionsOpened()
-        return { isOpen: true }
+        return { isPopoverOpen: true }
       }
       return null
     })
@@ -69,62 +65,64 @@ export class DiffOptions extends React.Component<
 
   private closePopover = () => {
     this.setState(prevState => {
-      if (prevState.isOpen) {
-        if (this.state.showNewCallout) {
-          setBoolean(HasSeenSplitDiffKey, true)
-        }
-        document.removeEventListener('mousedown', this.onDocumentMouseDown)
-        return { isOpen: false, showNewCallout: false }
+      if (prevState.isPopoverOpen) {
+        return { isPopoverOpen: false }
       }
 
       return null
     })
   }
 
-  public componentWillUnmount() {
-    document.removeEventListener('mousedown', this.onDocumentMouseDown)
-  }
-
-  private onDocumentMouseDown = (event: MouseEvent) => {
-    const { current: ref } = this.diffOptionsRef
-    const { target } = event
-
-    if (ref !== null && target instanceof Node && !ref.contains(target)) {
-      this.closePopover()
-    }
-  }
-
   private onHideWhitespaceChangesChanged = (
     event: React.FormEvent<HTMLInputElement>
   ) => {
-    if (this.props.onHideWhitespaceChangesChanged !== undefined) {
-      this.props.onHideWhitespaceChangesChanged(event.currentTarget.checked)
-    }
+    return this.props.onHideWhitespaceChangesChanged(
+      event.currentTarget.checked
+    )
   }
 
   public render() {
+    const buttonLabel = `Diff ${__DARWIN__ ? 'Settings' : 'Options'}`
     return (
       <div className="diff-options-component" ref={this.diffOptionsRef}>
-        <button onClick={this.onTogglePopover}>
-          <Octicon symbol={OcticonSymbol.gear} />
-          <Octicon symbol={OcticonSymbol.triangleDown} />
-          {this.state.showNewCallout && (
-            <div className="call-to-action-bubble">New</div>
-          )}
+        <button
+          aria-label={buttonLabel}
+          onClick={this.onButtonClick}
+          aria-expanded={this.state.isPopoverOpen}
+          ref={this.innerButtonRef}
+        >
+          <Tooltip
+            target={this.innerButtonRef}
+            direction={TooltipDirection.NORTH}
+            applyAriaDescribedBy={false}
+          >
+            {buttonLabel}
+          </Tooltip>
+          <span ref={this.gearIconRef}>
+            <Octicon symbol={octicons.gear} />
+          </span>
+          <Octicon symbol={octicons.triangleDown} />
         </button>
-        {this.state.isOpen && this.renderPopover()}
+        {this.state.isPopoverOpen && this.renderPopover()}
       </div>
     )
   }
 
   private renderPopover() {
+    const header = `Diff ${__DARWIN__ ? 'Settings' : 'Options'}`
     return (
-      <FocusTrap active={true} focusTrapOptions={this.focusTrapOptions}>
-        <div className="popover">
-          {this.renderHideWhitespaceChanges()}
-          {this.renderShowSideBySide()}
-        </div>
-      </FocusTrap>
+      <Popover
+        ariaLabelledby="diff-options-popover-header"
+        anchor={this.gearIconRef.current}
+        anchorPosition={PopoverAnchorPosition.BottomRight}
+        decoration={PopoverDecoration.Balloon}
+        onMousedownOutside={this.closePopover}
+        onClickOutside={this.closePopover}
+      >
+        <h3 id="diff-options-popover-header">{header}</h3>
+        {this.renderHideWhitespaceChanges()}
+        {this.renderShowSideBySide()}
+      </Popover>
     )
   }
 
@@ -137,8 +135,8 @@ export class DiffOptions extends React.Component<
 
   private renderShowSideBySide() {
     return (
-      <section>
-        <h3>Diff display</h3>
+      <fieldset role="radiogroup">
+        <legend>Diff display</legend>
         <RadioButton
           value="Unified"
           checked={!this.props.showSideBySideDiff}
@@ -151,22 +149,18 @@ export class DiffOptions extends React.Component<
           label={
             <>
               <div>Split</div>
-              <div className="call-to-action-bubble">Beta</div>
             </>
           }
           onSelected={this.onSideBySideSelected}
         />
-      </section>
+      </fieldset>
     )
   }
 
   private renderHideWhitespaceChanges() {
-    if (this.props.hideWhitespaceChanges === undefined) {
-      return null
-    }
     return (
-      <section>
-        <h3>Whitespace</h3>
+      <fieldset>
+        <legend>Whitespace</legend>
         <Checkbox
           value={
             this.props.hideWhitespaceChanges
@@ -178,7 +172,13 @@ export class DiffOptions extends React.Component<
             __DARWIN__ ? 'Hide Whitespace Changes' : 'Hide whitespace changes'
           }
         />
-      </section>
+        {this.props.isInteractiveDiff && (
+          <p className="secondary-text">
+            Interacting with individual lines or hunks will be disabled while
+            hiding whitespace.
+          </p>
+        )}
+      </fieldset>
     )
   }
 }

@@ -16,7 +16,6 @@ import { Account } from '../../models/account'
 import { API } from '../../lib/api'
 import { LinkButton } from '../lib/link-button'
 import { PopupType } from '../../models/popup'
-import { enableForkSettings } from '../../lib/feature-flag'
 
 interface ICreateForkDialogProps {
   readonly dispatcher: Dispatcher
@@ -53,18 +52,16 @@ export class CreateForkDialog extends React.Component<
         gitHubRepository.owner.login,
         gitHubRepository.name
       )
-      this.props.dispatcher.recordForkCreated()
-      const updatedRepository = await this.props.dispatcher.convertRepositoryToFork(
-        this.props.repository,
-        fork
-      )
+      this.props.dispatcher.incrementMetric('forksCreated')
+      const updatedRepository =
+        await this.props.dispatcher.convertRepositoryToFork(
+          this.props.repository,
+          fork
+        )
       this.setState({ loading: false })
       this.props.onDismissed()
 
-      if (
-        enableForkSettings() &&
-        isRepositoryWithForkedGitHubRepository(updatedRepository)
-      ) {
+      if (isRepositoryWithForkedGitHubRepository(updatedRepository)) {
         this.props.dispatcher.showPopup({
           type: PopupType.ChooseForkSettings,
           repository: updatedRepository,
@@ -83,7 +80,7 @@ export class CreateForkDialog extends React.Component<
         title="Do you want to fork this repository?"
         onDismissed={this.props.onDismissed}
         onSubmit={this.state.error ? undefined : this.onSubmit}
-        dismissable={!this.state.loading}
+        dismissDisabled={this.state.loading}
         loading={this.state.loading}
         type={this.state.error ? 'error' : 'normal'}
         key={this.props.repository.name}

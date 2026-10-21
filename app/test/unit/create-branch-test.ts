@@ -1,3 +1,5 @@
+import { describe, it } from 'node:test'
+import assert from 'node:assert'
 import { getStartPoint } from '../../src/lib/create-branch'
 import { TipState, IValidBranch, IDetachedHead } from '../../src/models/tip'
 import {
@@ -6,18 +8,9 @@ import {
   IBranchTip,
   Branch,
 } from '../../src/models/branch'
-import { CommitIdentity } from '../../src/models/commit-identity'
-
-const stubAuthor: CommitIdentity = {
-  name: 'Brendan Forster',
-  email: 'brendan@example.com',
-  date: new Date(),
-  tzOffset: 0,
-}
 
 const stubTip: IBranchTip = {
   sha: 'deadbeef',
-  author: stubAuthor,
 }
 
 const defaultBranch: Branch = {
@@ -25,9 +18,12 @@ const defaultBranch: Branch = {
   upstream: null,
   tip: stubTip,
   type: BranchType.Local,
-  remote: null,
+  remoteName: null,
+  upstreamRemoteName: null,
   upstreamWithoutRemote: null,
   nameWithoutRemote: 'my-default-branch',
+  isDesktopForkRemoteBranch: false,
+  ref: '',
 }
 
 const upstreamDefaultBranch = null
@@ -37,9 +33,12 @@ const someOtherBranch: Branch = {
   upstream: null,
   tip: stubTip,
   type: BranchType.Local,
-  remote: null,
+  remoteName: null,
+  upstreamRemoteName: null,
   upstreamWithoutRemote: null,
   nameWithoutRemote: 'some-other-branch',
+  isDesktopForkRemoteBranch: false,
+  ref: '',
 }
 
 describe('create-branch/getStartPoint', () => {
@@ -57,15 +56,15 @@ describe('create-branch/getStartPoint', () => {
     }
 
     it('returns current HEAD when HEAD requested', () => {
-      expect(action(StartPoint.Head)).toBe(StartPoint.Head)
+      assert.equal(action(StartPoint.Head), StartPoint.Head)
     })
 
     it('chooses current branch when current branch requested', () => {
-      expect(action(StartPoint.CurrentBranch)).toBe(StartPoint.CurrentBranch)
+      assert.equal(action(StartPoint.CurrentBranch), StartPoint.CurrentBranch)
     })
 
     it('chooses default branch when default branch requested', () => {
-      expect(action(StartPoint.DefaultBranch)).toBe(StartPoint.DefaultBranch)
+      assert.equal(action(StartPoint.DefaultBranch), StartPoint.DefaultBranch)
     })
   })
 
@@ -83,15 +82,15 @@ describe('create-branch/getStartPoint', () => {
     }
 
     it('returns current HEAD when HEAD requested', () => {
-      expect(action(StartPoint.Head)).toBe(StartPoint.Head)
+      assert.equal(action(StartPoint.Head), StartPoint.Head)
     })
 
     it('chooses current branch when current branch requested', () => {
-      expect(action(StartPoint.CurrentBranch)).toBe(StartPoint.CurrentBranch)
+      assert.equal(action(StartPoint.CurrentBranch), StartPoint.CurrentBranch)
     })
 
     it('chooses default branch when default branch requested', () => {
-      expect(action(StartPoint.DefaultBranch)).toBe(StartPoint.DefaultBranch)
+      assert.equal(action(StartPoint.DefaultBranch), StartPoint.DefaultBranch)
     })
   })
 
@@ -109,15 +108,15 @@ describe('create-branch/getStartPoint', () => {
     }
 
     it('returns current HEAD when HEAD requested', () => {
-      expect(action(StartPoint.Head)).toBe(StartPoint.Head)
+      assert.equal(action(StartPoint.Head), StartPoint.Head)
     })
 
     it('returns current HEAD when current branch requested', () => {
-      expect(action(StartPoint.CurrentBranch)).toBe(StartPoint.Head)
+      assert.equal(action(StartPoint.CurrentBranch), StartPoint.Head)
     })
 
     it('returns current HEAD when default branch requested', () => {
-      expect(action(StartPoint.DefaultBranch)).toBe(StartPoint.Head)
+      assert.equal(action(StartPoint.DefaultBranch), StartPoint.Head)
     })
   })
 })

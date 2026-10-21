@@ -1,15 +1,22 @@
 import * as React from 'react'
 import { createUniqueId, releaseUniqueId } from './id-pool'
+import classNames from 'classnames'
 
 interface ISelectProps {
   /** The label for the select control. */
   readonly label?: string
+
+  /** The className for the select component. */
+  readonly className?: string
 
   /** The value of the select control. */
   readonly value?: string
 
   /** The default value of the select control. */
   readonly defaultValue?: string
+
+  /** Whether or not the select control is disabled. False by default. */
+  readonly disabled?: boolean
 
   /** Called when the user changes the selected valued. */
   readonly onChange?: (event: React.FormEvent<HTMLSelectElement>) => void
@@ -52,13 +59,14 @@ export class Select extends React.Component<ISelectProps, ISelectState> {
 
   public render() {
     return (
-      <div className="select-component">
+      <div className={classNames('select-component', this.props.className)}>
         {this.renderLabel()}
         <select
           id={this.state.inputId}
           onChange={this.props.onChange}
           value={this.props.value}
           defaultValue={this.props.defaultValue}
+          disabled={this.props.disabled}
         >
           {this.props.children}
         </select>

@@ -1,109 +1,238 @@
-import { pathExists } from 'fs-extra'
-
+import { pathExists } from '../path-exists'
 import { IFoundEditor } from './found-editor'
-import { assertNever } from '../fatal-error'
-import { parseEnumValue } from '../enum'
 
-export enum ExternalEditor {
-  Atom = 'Atom',
-  VSCode = 'Visual Studio Code',
-  VSCodeInsiders = 'Visual Studio Code (Insiders)',
-  VSCodium = 'VSCodium',
-  SublimeText = 'Sublime Text',
-  Typora = 'Typora',
-  SlickEdit = 'SlickEdit',
+/** Represents an external editor on Linux */
+interface ILinuxExternalEditor {
+  /** Name of the editor. It will be used both as identifier and user-facing. */
+  readonly name: string
+
+  /** List of possible paths where the editor's executable might be located. */
+  readonly paths: string[]
 }
 
-export function parse(label: string): ExternalEditor | null {
-  return parseEnumValue(ExternalEditor, label) ?? null
-}
+/**
+ * This list contains all the external editors supported on Linux. Add a new
+ * entry here to add support for your favorite editor.
+ **/
+const editors: ILinuxExternalEditor[] = [
+  {
+    name: 'Atom',
+    paths: ['/snap/bin/atom', '/usr/bin/atom'],
+  },
+  {
+    name: 'Neovim',
+    paths: ['/usr/bin/nvim'],
+  },
+  {
+    name: 'Neovim-Qt',
+    paths: ['/usr/bin/nvim-qt'],
+  },
+  {
+    name: 'Neovide',
+    paths: ['/usr/bin/neovide'],
+  },
+  {
+    name: 'gVim',
+    paths: ['/usr/bin/gvim'],
+  },
+  {
+    name: 'Visual Studio Code',
+    paths: [
+      '/usr/share/code/bin/code',
+      '/snap/bin/code',
+      '/usr/bin/code',
+      '/mnt/c/Program Files/Microsoft VS Code/bin/code',
+      '/var/lib/flatpak/app/com.visualstudio.code/current/active/export/bin/com.visualstudio.code',
+      '.local/share/flatpak/app/com.visualstudio.code/current/active/export/bin/com.visualstudio.code',
+    ],
+  },
+  {
+    name: 'Visual Studio Code (Insiders)',
+    paths: [
+      '/snap/bin/code-insiders',
+      '/usr/bin/code-insiders',
+      '/var/lib/flatpak/app/com.visualstudio.code.insiders/current/active/export/bin/com.visualstudio.code.insiders',
+      '.local/share/flatpak/app/com.visualstudio.code.insiders/current/active/export/bin/com.visualstudio.code.insiders',
+    ],
+  },
+  {
+    name: 'VSCodium',
+    paths: [
+      '/usr/bin/codium',
+      '/var/lib/flatpak/app/com.vscodium.codium/current/active/export/bin/com.vscodium.codium',
+      '/usr/share/vscodium-bin/bin/codium',
+      '.local/share/flatpak/app/com.vscodium.codium/current/active/export/bin/com.vscodium.codium',
+      '/snap/bin/codium',
+    ],
+  },
+  {
+    name: 'VSCodium (Insiders)',
+    paths: ['/usr/bin/codium-insiders'],
+  },
+  {
+    name: 'Sublime Text',
+    paths: ['/usr/bin/subl'],
+  },
+  {
+    name: 'Typora',
+    paths: ['/usr/bin/typora'],
+  },
+  {
+    name: 'SlickEdit',
+    paths: [
+      '/opt/slickedit-pro2018/bin/vs',
+      '/opt/slickedit-pro2017/bin/vs',
+      '/opt/slickedit-pro2016/bin/vs',
+      '/opt/slickedit-pro2015/bin/vs',
+    ],
+  },
+  {
+    // Code editor for elementary OS
+    // https://github.com/elementary/code
+    name: 'Code',
+    paths: ['/usr/bin/io.elementary.code'],
+  },
+  {
+    name: 'Lite XL',
+    paths: ['/usr/bin/lite-xl'],
+  },
+  {
+    name: 'JetBrains PhpStorm',
+    paths: [
+      '/snap/bin/phpstorm',
+      '.local/share/JetBrains/Toolbox/scripts/PhpStorm',
+    ],
+  },
+  {
+    name: 'JetBrains WebStorm',
+    paths: [
+      '/snap/bin/webstorm',
+      '.local/share/JetBrains/Toolbox/scripts/webstorm',
+    ],
+  },
+  {
+    name: 'IntelliJ IDEA',
+    paths: ['/snap/bin/idea', '.local/share/JetBrains/Toolbox/scripts/idea'],
+  },
+  {
+    name: 'IntelliJ IDEA Ultimate Edition',
+    paths: [
+      '/snap/bin/intellij-idea-ultimate',
+      '.local/share/JetBrains/Toolbox/scripts/intellij-idea-ultimate',
+    ],
+  },
+  {
+    name: 'JetBrains Goland',
+    paths: [
+      '/snap/bin/goland',
+      '.local/share/JetBrains/Toolbox/scripts/goland',
+    ],
+  },
+  {
+    name: 'JetBrains CLion',
+    paths: ['/snap/bin/clion', '.local/share/JetBrains/Toolbox/scripts/clion1'],
+  },
+  {
+    name: 'JetBrains Rider',
+    paths: ['/snap/bin/rider', '.local/share/JetBrains/Toolbox/scripts/rider'],
+  },
+  {
+    name: 'JetBrains RubyMine',
+    paths: [
+      '/snap/bin/rubymine',
+      '.local/share/JetBrains/Toolbox/scripts/rubymine',
+    ],
+  },
+  {
+    name: 'JetBrains PyCharm',
+    paths: [
+      '/snap/bin/pycharm',
+      '/snap/bin/pycharm-professional',
+      '.local/share/JetBrains/Toolbox/scripts/pycharm',
+    ],
+  },
+  {
+    name: 'JetBrains RustRover',
+    paths: [
+      '/snap/bin/rustrover',
+      '.local/share/JetBrains/Toolbox/scripts/rustrover',
+    ],
+  },
+  {
+    name: 'Android Studio',
+    paths: [
+      '/snap/bin/studio',
+      '.local/share/JetBrains/Toolbox/scripts/studio',
+    ],
+  },
+  {
+    name: 'Emacs',
+    paths: ['/snap/bin/emacs', '/usr/local/bin/emacs', '/usr/bin/emacs'],
+  },
+  {
+    name: 'Kate',
+    paths: ['/usr/bin/kate'],
+  },
+  {
+    name: 'GEdit',
+    paths: ['/usr/bin/gedit'],
+  },
+  {
+    name: 'GNOME Text Editor',
+    paths: ['/usr/bin/gnome-text-editor'],
+  },
+  {
+    name: 'GNOME Builder',
+    paths: ['/usr/bin/gnome-builder'],
+  },
+  {
+    name: 'Notepadqq',
+    paths: ['/usr/bin/notepadqq'],
+  },
+  {
+    name: 'Mousepad',
+    paths: ['/usr/bin/mousepad'],
+  },
+  {
+    name: 'Pulsar',
+    paths: ['/usr/bin/pulsar'],
+  },
+  {
+    name: 'Pluma',
+    paths: ['/usr/bin/pluma'],
+  },
+  {
+    name: 'Zed',
+    paths: [
+      '/usr/bin/zedit',
+      '/usr/bin/zeditor',
+      '/usr/bin/zed-editor',
+      '~/.local/bin/zed',
+      '/usr/bin/zed',
+    ],
+  },
+]
 
-async function getPathIfAvailable(path: string): Promise<string | null> {
-  return (await pathExists(path)) ? path : null
-}
-
-async function getEditorPath(editor: ExternalEditor): Promise<string | null> {
-  switch (editor) {
-    case ExternalEditor.Atom:
-      return getPathIfAvailable('/usr/bin/atom')
-    case ExternalEditor.VSCode:
-      return getPathIfAvailable('/usr/bin/code')
-    case ExternalEditor.VSCodeInsiders:
-      return getPathIfAvailable('/usr/bin/code-insiders')
-    case ExternalEditor.VSCodium:
-      return getPathIfAvailable('/usr/bin/codium')
-    case ExternalEditor.SublimeText:
-      return getPathIfAvailable('/usr/bin/subl')
-    case ExternalEditor.Typora:
-      return getPathIfAvailable('/usr/bin/typora')
-    case ExternalEditor.SlickEdit:
-      const possiblePaths = [
-        '/opt/slickedit-pro2018/bin/vs',
-        '/opt/slickedit-pro2017/bin/vs',
-        '/opt/slickedit-pro2016/bin/vs',
-        '/opt/slickedit-pro2015/bin/vs',
-      ]
-      for (const possiblePath of possiblePaths) {
-        const slickeditPath = await getPathIfAvailable(possiblePath)
-        if (slickeditPath) {
-          return slickeditPath
-        }
-      }
-      return null
-    default:
-      return assertNever(editor, `Unknown editor: ${editor}`)
+async function getAvailablePath(paths: string[]): Promise<string | null> {
+  for (const path of paths) {
+    if (await pathExists(path)) {
+      return path
+    }
   }
+
+  return null
 }
 
 export async function getAvailableEditors(): Promise<
-  ReadonlyArray<IFoundEditor<ExternalEditor>>
+  ReadonlyArray<IFoundEditor<string>>
 > {
-  const results: Array<IFoundEditor<ExternalEditor>> = []
+  const results: Array<IFoundEditor<string>> = []
 
-  const [
-    atomPath,
-    codePath,
-    codeInsidersPath,
-    codiumPath,
-    sublimePath,
-    typoraPath,
-    slickeditPath,
-  ] = await Promise.all([
-    getEditorPath(ExternalEditor.Atom),
-    getEditorPath(ExternalEditor.VSCode),
-    getEditorPath(ExternalEditor.VSCodeInsiders),
-    getEditorPath(ExternalEditor.VSCodium),
-    getEditorPath(ExternalEditor.SublimeText),
-    getEditorPath(ExternalEditor.Typora),
-    getEditorPath(ExternalEditor.SlickEdit),
-  ])
-
-  if (atomPath) {
-    results.push({ editor: ExternalEditor.Atom, path: atomPath })
-  }
-
-  if (codePath) {
-    results.push({ editor: ExternalEditor.VSCode, path: codePath })
-  }
-
-  if (codeInsidersPath) {
-    results.push({ editor: ExternalEditor.VSCode, path: codeInsidersPath })
-  }
-
-  if (codiumPath) {
-    results.push({ editor: ExternalEditor.VSCodium, path: codiumPath })
-  }
-
-  if (sublimePath) {
-    results.push({ editor: ExternalEditor.SublimeText, path: sublimePath })
-  }
-
-  if (typoraPath) {
-    results.push({ editor: ExternalEditor.Typora, path: typoraPath })
-  }
-
-  if (slickeditPath) {
-    results.push({ editor: ExternalEditor.SlickEdit, path: slickeditPath })
+  for (const editor of editors) {
+    const path = await getAvailablePath(editor.paths)
+    if (path) {
+      results.push({ editor: editor.name, path })
+    }
   }
 
   return results

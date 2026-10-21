@@ -3,6 +3,7 @@ import {
   IDatabaseGitHubRepository,
   IDatabaseProtectedBranch,
   IDatabaseRepository,
+  getOwnerKey,
 } from '../databases/repositories-database'
 import { Owner } from '../../models/owner'
 import {
@@ -15,13 +16,22 @@ import {
   assertIsRepositoryWithGitHubRepository,
   isRepositoryWithGitHubRepository,
 } from '../../models/repository'
-import { fatalError, assertNonNullable } from '../fatal-error'
-import { IAPIRepository, IAPIBranch, IAPIFullRepository } from '../api'
+import { fatalError, assertNonNullable, forceUnwrap } from '../fatal-error'
+import {
+  IAPIRepository,
+  IAPIBranch,
+  IAPIFullRepository,
+  GitHubAccountType,
+} from '../api'
 import { TypedBaseStore } from './base-store'
 import { WorkflowPreferences } from '../../models/workflow-preferences'
 import { clearTagsToPush } from './helpers/tags-to-push-storage'
 import { IMatchedGitHubRepository } from '../repository-matching'
 import { shallowEquals } from '../equality'
+
+type AddRepositoryOptions = {
+  missing?: boolean
+}
 
 /** The store for local repositories. */
 export class RepositoriesStore extends TypedBaseStore<
@@ -105,22 +115,30 @@ export class RepositoriesStore extends TypedBaseStore<
     if (owner === undefined) {
       const dbOwner = await this.db.owners.get(repo.ownerID)
       assertNonNullable(dbOwner, `Missing owner '${repo.ownerID}'`)
-      owner = new Owner(dbOwner.login, dbOwner.endpoint, dbOwner.id!)
+      owner = new Owner(
+        dbOwner.login,
+        dbOwner.endpoint,
+        dbOwner.id!,
+        dbOwner.type
+      )
     }
 
-    return new GitHubRepository(
+    const ghRepo = new GitHubRepository(
       repo.name,
       owner,
       repo.id,
       repo.private,
       repo.htmlURL,
-      repo.defaultBranch,
       repo.cloneURL,
       repo.issuesEnabled,
       repo.isArchived,
       repo.permissions,
       parent
     )
+
+    // Dexie gets confused if we return a non-promise value (e.g. if this function
+    // didn't need to await for the parent repo or the owner)
+    return Promise.resolve(ghRepo)
   }
 
   private async toRepository(repo: IDatabaseRepository) {
@@ -130,10 +148,13 @@ export class RepositoriesStore extends TypedBaseStore<
       repo.id,
       repo.gitHubRepositoryID !== null
         ? await this.findGitHubRepositoryByID(repo.gitHubRepositoryID)
-        : null,
+        : await Promise.resolve(null), // Dexie gets confused if we return null
       repo.missing,
+      repo.alias,
       repo.workflowPreferences,
-      repo.isTutorialRepository
+      repo.isTutorialRepository,
+      repo.gitDir,
+      repo.mainWorktreePath
     )
   }
 
@@ -144,7 +165,7 @@ export class RepositoriesStore extends TypedBaseStore<
     const gitHubRepository = await this.db.gitHubRepositories.get(id)
     return gitHubRepository !== undefined
       ? this.toGitHubRepository(gitHubRepository)
-      : null
+      : Promise.resolve(null) // Dexie gets confused if we return null
   }
 
   /** Get all the local repositories. */
@@ -180,7 +201,8 @@ export class RepositoriesStore extends TypedBaseStore<
   public async addTutorialRepository(
     path: string,
     endpoint: string,
-    apiRepo: IAPIFullRepository
+    apiRepo: IAPIFullRepository,
+    gitDir?: string
   ) {
     await this.db.transaction(
       'rw',
@@ -194,10 +216,12 @@ export class RepositoriesStore extends TypedBaseStore<
         return await this.db.repositories.put({
           ...(existingRepo?.id !== undefined && { id: existingRepo.id }),
           path,
+          alias: null,
           gitHubRepositoryID: ghRepo.dbID,
           missing: false,
           lastStashCheckDate: null,
           isTutorialRepository: true,
+          gitDir,
         })
       }
     )
@@ -210,7 +234,11 @@ export class RepositoriesStore extends TypedBaseStore<
    *
    * If a repository already exists with that path, it will be returned instead.
    */
-  public async addRepository(path: string): Promise<Repository> {
+  public async addRepository(
+    path: string,
+    gitDir: string | undefined,
+    opts?: AddRepositoryOptions
+  ): Promise<Repository> {
     const repository = await this.db.transaction(
       'rw',
       this.db.repositories,
@@ -226,8 +254,10 @@ export class RepositoriesStore extends TypedBaseStore<
         const dbRepo: IDatabaseRepository = {
           path,
           gitHubRepositoryID: null,
-          missing: false,
+          missing: opts?.missing ?? false,
           lastStashCheckDate: null,
+          alias: null,
+          gitDir,
         }
         const id = await this.db.repositories.add(dbRepo)
         return this.toRepository({ id, ...dbRepo })
@@ -261,9 +291,49 @@ export class RepositoriesStore extends TypedBaseStore<
       repository.id,
       repository.gitHubRepository,
       missing,
+      repository.alias,
       repository.workflowPreferences,
-      repository.isTutorialRepository
+      repository.isTutorialRepository,
+      repository.gitDir,
+      repository.mainWorktreePath
     )
+  }
+
+  /** Update the repository's `gitDir` path. */
+  public async updateRepositoryGitDir(
+    repository: Repository,
+    gitDir: string
+  ): Promise<Repository> {
+    await this.db.repositories.update(repository.id, { gitDir })
+
+    this.emitUpdatedRepositories()
+
+    return new Repository(
+      repository.path,
+      repository.id,
+      repository.gitHubRepository,
+      repository.missing,
+      repository.alias,
+      repository.workflowPreferences,
+      repository.isTutorialRepository,
+      gitDir,
+      repository.mainWorktreePath
+    )
+  }
+
+  /**
+   * Update the alias for the specified repository.
+   *
+   * @param repository  The repository to update.
+   * @param alias       The new alias to use.
+   */
+  public async updateRepositoryAlias(
+    repository: Repository,
+    alias: string | null
+  ): Promise<void> {
+    await this.db.repositories.update(repository.id, { alias })
+
+    this.emitUpdatedRepositories()
   }
 
   /**
@@ -281,12 +351,26 @@ export class RepositoriesStore extends TypedBaseStore<
     this.emitUpdatedRepositories()
   }
 
-  /** Update the repository's path. */
+  /**
+   * Update the repository's path.
+   *
+   * Unlike `switchWorktree` this doesn't default `mainWorktreePath` to the
+   * recorded one. Moving a repository invalidates it, so callers say what it is
+   * now, or `undefined` when it can't be resolved.
+   */
   public async updateRepositoryPath(
     repository: Repository,
-    path: string
+    path: string,
+    gitDir: string | undefined,
+    mainWorktreePath: string | undefined,
+    missing: boolean = false
   ): Promise<Repository> {
-    await this.db.repositories.update(repository.id, { missing: false, path })
+    await this.db.repositories.update(repository.id, {
+      missing,
+      path,
+      gitDir,
+      mainWorktreePath,
+    })
 
     this.emitUpdatedRepositories()
 
@@ -294,10 +378,68 @@ export class RepositoriesStore extends TypedBaseStore<
       path,
       repository.id,
       repository.gitHubRepository,
-      false,
+      missing,
+      repository.alias,
       repository.workflowPreferences,
-      repository.isTutorialRepository
+      repository.isTutorialRepository,
+      gitDir,
+      mainWorktreePath
     )
+  }
+
+  /**
+   * Switch the repository to a different worktree path, persisting the target
+   * git directory as a stable anchor for recovery.
+   *
+   * If another repository already exists at the target path, returns that
+   * repository instead of modifying the current one.
+   *
+   * @param repository  The repository to switch
+   * @param worktreePath The path of the worktree to switch to
+   * @param gitDir       The git directory for the target worktree
+   * @param mainWorktreePath The path of the repository's main worktree, which
+   *                         recovery relies on once the target worktree (and
+   *                         its git metadata) is gone
+   */
+  public async switchWorktree(
+    repository: Repository,
+    worktreePath: string,
+    missing = false,
+    gitDir: string | undefined = repository.gitDir,
+    mainWorktreePath: string | undefined = repository.mainWorktreePath
+  ): Promise<{ repository: Repository; existingRepository: boolean }> {
+    const existing = await this.db.repositories.get({ path: worktreePath })
+
+    if (existing !== undefined) {
+      return {
+        repository: await this.toRepository(existing),
+        existingRepository: true,
+      }
+    }
+
+    await this.db.repositories.update(repository.id, {
+      path: worktreePath,
+      missing,
+      gitDir,
+      mainWorktreePath,
+    })
+
+    this.emitUpdatedRepositories()
+
+    return {
+      repository: new Repository(
+        worktreePath,
+        repository.id,
+        repository.gitHubRepository,
+        missing,
+        repository.alias,
+        repository.workflowPreferences,
+        repository.isTutorialRepository,
+        gitDir,
+        mainWorktreePath
+      ),
+      existingRepository: false,
+    }
   }
 
   /**
@@ -341,7 +483,7 @@ export class RepositoriesStore extends TypedBaseStore<
       )
     }
 
-    lastCheckDate = record.lastStashCheckDate
+    lastCheckDate = record.lastStashCheckDate ?? null
     if (lastCheckDate !== null) {
       this.lastStashCheckCache.set(repository.id, lastCheckDate)
     }
@@ -349,20 +491,40 @@ export class RepositoriesStore extends TypedBaseStore<
     return lastCheckDate
   }
 
-  private async putOwner(endpoint: string, login: string): Promise<Owner> {
-    login = login.toLowerCase()
+  private async putOwner(
+    endpoint: string,
+    login: string,
+    ownerType?: GitHubAccountType
+  ): Promise<Owner> {
+    const key = getOwnerKey(endpoint, login)
+    const existingOwner = await this.db.owners.get({ key })
+    let id
 
-    const existingOwner = await this.db.owners
-      .where('[endpoint+login]')
-      .equals([endpoint, login])
-      .first()
-
-    if (existingOwner) {
-      return new Owner(login, endpoint, existingOwner.id!)
+    // Since we look up the owner based on a key which is the product of the
+    // lowercased endpoint and login we know that we've found our match but it's
+    // possible that the case differs (i.e we found `usera` but the actual login
+    // is `userA`). In that case we want to update our database to persist the
+    // login with the proper case.
+    if (
+      existingOwner === undefined ||
+      existingOwner.login !== login ||
+      // This is added so that we update existing owners with an undefined type.
+      (ownerType !== undefined && existingOwner.type !== ownerType)
+    ) {
+      id = existingOwner?.id
+      const existingId = id !== undefined ? { id } : {}
+      id = await this.db.owners.put({
+        ...existingId,
+        key,
+        endpoint,
+        login,
+        type: ownerType,
+      })
+    } else {
+      id = forceUnwrap('Missing owner id', existingOwner.id)
     }
 
-    const id = await this.db.owners.add({ login, endpoint })
-    return new Owner(login, endpoint, id)
+    return new Owner(login, endpoint, id, ownerType ?? existingOwner?.type)
   }
 
   public async upsertGitHubRepositoryFromMatch(
@@ -386,7 +548,6 @@ export class RepositoriesStore extends TypedBaseStore<
 
         const skeletonRepo: IDatabaseGitHubRepository = {
           cloneURL: null,
-          defaultBranch: null,
           htmlURL: null,
           lastPruneDate: null,
           name: match.name,
@@ -421,8 +582,11 @@ export class RepositoriesStore extends TypedBaseStore<
       repo.id,
       ghRepo,
       repo.missing,
+      repo.alias,
       repo.workflowPreferences,
-      repo.isTutorialRepository
+      repo.isTutorialRepository,
+      repo.gitDir,
+      repo.mainWorktreePath
     )
 
     assertIsRepositoryWithGitHubRepository(updatedRepo)
@@ -441,10 +605,10 @@ export class RepositoriesStore extends TypedBaseStore<
             gitHubRepository.parent,
             true
           )
-        : null
+        : await Promise.resolve(null) // Dexie gets confused if we return null
 
-    const login = gitHubRepository.owner.login.toLowerCase()
-    const owner = await this.putOwner(endpoint, login)
+    const { login, type } = gitHubRepository.owner
+    const owner = await this.putOwner(endpoint, login, type)
 
     const existingRepo = await this.db.gitHubRepositories
       .where('[ownerID+name]')
@@ -493,7 +657,6 @@ export class RepositoriesStore extends TypedBaseStore<
       name: gitHubRepository.name,
       private: gitHubRepository.private,
       htmlURL: gitHubRepository.html_url,
-      defaultBranch: gitHubRepository.default_branch,
       cloneURL: gitHubRepository.clone_url,
       parentID,
       lastPruneDate: existingRepo?.lastPruneDate ?? null,
@@ -639,7 +802,7 @@ export class RepositoriesStore extends TypedBaseStore<
    * Helper method to emit updates consistently
    * (This is the only way we emit updates from this store.)
    */
-  private async emitUpdatedRepositories() {
+  private emitUpdatedRepositories() {
     if (!this.emitQueued) {
       setImmediate(() => {
         this.getAll()
@@ -647,6 +810,7 @@ export class RepositoriesStore extends TypedBaseStore<
           .catch(e => log.error(`Failed emitting update`, e))
           .finally(() => (this.emitQueued = false))
       })
+      this.emitQueued = true
     }
   }
 }

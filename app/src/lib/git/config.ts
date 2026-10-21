@@ -1,13 +1,22 @@
 import { git } from './core'
 import { Repository } from '../../models/repository'
-import { normalize } from 'path'
+import { isAbsolute, normalize } from 'path'
+import { realpath } from 'fs/promises'
 
-/** Look up a config value by name in the repository. */
+/**
+ * Look up a config value by name in the repository.
+ *
+ * @param onlyLocal Whether or not the value to be retrieved should stick to
+ *                  the local repository settings. It is false by default. This
+ *                  is equivalent to using the `--local` argument in the
+ *                  `git config` invocation.
+ */
 export function getConfigValue(
   repository: Repository,
-  name: string
+  name: string,
+  onlyLocal: boolean = false
 ): Promise<string | null> {
-  return getConfigValueInPath(name, repository.path)
+  return getConfigValueInPath(name, repository.path, onlyLocal)
 }
 
 /** Look up a global config value by name. */
@@ -17,7 +26,32 @@ export function getGlobalConfigValue(
     HOME: string
   }
 ): Promise<string | null> {
-  return getConfigValueInPath(name, null, undefined, env)
+  return getConfigValueInPath(name, null, false, undefined, env)
+}
+
+/**
+ * Look up a config value by name.
+ *
+ * Treats the returned value as a boolean as per Git's
+ * own definition of a boolean configuration value (i.e.
+ * 0 -> false, "off" -> false, "yes" -> true etc)
+ */
+export async function getBooleanConfigValue(
+  repository: Repository,
+  name: string,
+  onlyLocal: boolean = false,
+  env?: {
+    HOME: string
+  }
+): Promise<boolean | null> {
+  const value = await getConfigValueInPath(
+    name,
+    repository.path,
+    onlyLocal,
+    'bool',
+    env
+  )
+  return value === null ? null : value !== 'false'
 }
 
 /**
@@ -33,42 +67,29 @@ export async function getGlobalBooleanConfigValue(
     HOME: string
   }
 ): Promise<boolean | null> {
-  const value = await getConfigValueInPath(name, null, 'bool', env)
+  const value = await getConfigValueInPath(name, null, false, 'bool', env)
   return value === null ? null : value !== 'false'
 }
 
-/** Set the local config value by name. */
-export async function setGlobalConfigValue(
-  name: string,
-  value: string,
-  env?: {
-    HOME: string
-  }
-): Promise<void> {
-  const options = env ? { env } : undefined
-
-  await git(
-    ['config', '--global', '--replace-all', name, value],
-    __dirname,
-    'setGlobalConfigValue',
-    options
-  )
-}
-
 /**
- * Look up a global config value by name
+ * Look up a config value by name
  *
- * @param path The path to execute the `git` command in. If null
- *             we'll use the global configuration (i.e. --global)
- *             and execute the Git call from the same location that
- *             GitHub Desktop is installed in.
- * @param type Canonicalize configuration values according to the
- *             expected type (i.e. 0 -> false, "on" -> true etc).
- *             See `--type` documentation in `git config`
+ * @param path      The path to execute the `git` command in. If null
+ *                  we'll use the global configuration (i.e. --global)
+ *                  and execute the Git call from the same location that
+ *                  GitHub Desktop is installed in.
+ * @param onlyLocal Whether or not the value to be retrieved should stick to
+ *                  the local repository settings (if a path is specified). It
+ *                  is false by default. It is equivalent to using the `--local`
+ *                  argument in the `git config` invocation.
+ * @param type      Canonicalize configuration values according to the
+ *                  expected type (i.e. 0 -> false, "on" -> true etc).
+ *                  See `--type` documentation in `git config`
  */
 async function getConfigValueInPath(
   name: string,
   path: string | null,
+  onlyLocal: boolean = false,
   type?: 'bool' | 'int' | 'bool-or-int' | 'path' | 'expiry-date' | 'color',
   env?: {
     HOME: string
@@ -77,6 +98,8 @@ async function getConfigValueInPath(
   const flags = ['config', '-z']
   if (!path) {
     flags.push('--global')
+  } else if (onlyLocal) {
+    flags.push('--local')
   }
 
   if (type !== undefined) {
@@ -100,31 +123,175 @@ async function getConfigValueInPath(
   return pieces[0]
 }
 
-/** Get the path to the global git config. */
-export async function getGlobalConfigPath(env?: {
-  HOME: string
-}): Promise<string | null> {
-  const options = env ? { env } : undefined
-  const result = await git(
-    ['config', '--global', '--list', '--show-origin', '--name-only', '-z'],
+/**
+ * Get the path to the global git config
+ *
+ * Note: this uses git config --edit which will automatically create the global
+ * config file if it doesn't exist yet. The primary purpose behind this method
+ * is to support opening the global git config for editing.
+ */
+export const getGlobalConfigPath = (env?: { HOME: string }) =>
+  git(['config', '--edit', '--global'], __dirname, 'getGlobalConfigPath', {
+    // We're using printf instead of echo because echo could attempt to decode
+    // escape sequences like \n which would be bad in a case like
+    // c:\Users\niik\.gitconfig
+    //         ^^
+    env: { ...env, GIT_EDITOR: 'printf %s' },
+  }).then(x => normalize(x.stdout))
+
+/** Set the local config value by name. */
+export async function setConfigValue(
+  repository: Repository,
+  name: string,
+  value: string,
+  env?: {
+    HOME: string
+  }
+): Promise<void> {
+  return setConfigValueInPath(name, value, repository.path, env)
+}
+
+/** Set the global config value by name. */
+export async function setGlobalConfigValue(
+  name: string,
+  value: string,
+  env?: {
+    HOME: string
+  }
+): Promise<void> {
+  return setConfigValueInPath(name, value, null, env)
+}
+
+/** Set the global config value by name. */
+export async function addGlobalConfigValue(
+  name: string,
+  value: string
+): Promise<void> {
+  await git(
+    ['config', '--global', '--add', name, value],
     __dirname,
-    'getGlobalConfigPath',
-    options
+    'addGlobalConfigValue'
   )
-  const segments = result.stdout.split('\0')
-  if (segments.length < 1) {
-    return null
+}
+
+/**
+ * Adds an existing absolute directory to `safe.directory` if it's not already
+ * present, allowing Git to use that directory when it belongs to another user.
+ *
+ * Resolves the canonical path and rejects values that Git would interpret as
+ * an exception for multiple directories.
+ */
+export async function addSafeDirectory(path: string) {
+  if (!isAbsolute(path)) {
+    throw new Error('A directory exception requires an absolute path.')
   }
 
-  const pathSegment = segments[0]
-  if (!pathSegment.length) {
-    return null
+  path = await realpath(path)
+  path = __WIN32__ ? path.replaceAll('\\', '/') : path
+  if (path.endsWith('/*')) {
+    throw new Error('A directory exception must refer to a single directory.')
   }
 
-  const path = pathSegment.match(/file:(.+)/i)
-  if (!path || path.length < 2) {
-    return null
+  // UNC-paths on Windows need to be prefixed with `%(prefix)/`, see
+  // https://github.com/git-for-windows/git/commit/e394a16023cbb62784e380f70ad8a833fb960d68
+  if (__WIN32__ && path[0] === '/') {
+    path = `%(prefix)/${path}`
   }
 
-  return normalize(path[1])
+  await addGlobalConfigValueIfMissing('safe.directory', path)
+}
+
+/** Set the global config value by name. */
+export async function addGlobalConfigValueIfMissing(
+  name: string,
+  value: string
+): Promise<void> {
+  const { stdout, exitCode } = await git(
+    ['config', '--global', '-z', '--fixed-value', '--get-all', name, value],
+    __dirname,
+    'addGlobalConfigValue',
+    { successExitCodes: new Set([0, 1]) }
+  )
+
+  if (exitCode === 1 || !stdout.split('\0').includes(value)) {
+    await addGlobalConfigValue(name, value)
+  }
+}
+
+/**
+ * Set config value by name
+ *
+ * @param path The path to execute the `git` command in. If null
+ *             we'll use the global configuration (i.e. --global)
+ *             and execute the Git call from the same location that
+ *             GitHub Desktop is installed in.
+ */
+async function setConfigValueInPath(
+  name: string,
+  value: string,
+  path: string | null,
+  env?: {
+    HOME: string
+  }
+): Promise<void> {
+  const options = env ? { env } : undefined
+
+  const flags = ['config']
+
+  if (!path) {
+    flags.push('--global')
+  }
+
+  flags.push('--replace-all', name, value)
+
+  await git(flags, path || __dirname, 'setConfigValueInPath', options)
+}
+
+/** Remove the local config value by name. */
+export async function removeConfigValue(
+  repository: Repository,
+  name: string,
+  env?: {
+    HOME: string
+  }
+): Promise<void> {
+  return removeConfigValueInPath(name, repository.path, env)
+}
+
+/** Remove the global config value by name. */
+export async function removeGlobalConfigValue(
+  name: string,
+  env?: {
+    HOME: string
+  }
+): Promise<void> {
+  return removeConfigValueInPath(name, null, env)
+}
+
+/**
+ * Remove config value by name
+ *
+ * @param path The path to execute the `git` command in. If null
+ *             we'll use the global configuration (i.e. --global)
+ *             and execute the Git call from the same location that
+ *             GitHub Desktop is installed in.
+ */
+async function removeConfigValueInPath(
+  name: string,
+  path: string | null,
+  env?: {
+    HOME: string
+  }
+): Promise<void> {
+  const options = env ? { env } : undefined
+
+  const flags = ['config']
+
+  if (!path) {
+    flags.push('--global')
+  }
+
+  flags.push('--unset-all', name)
+
+  await git(flags, path || __dirname, 'removeConfigValueInPath', options)
 }

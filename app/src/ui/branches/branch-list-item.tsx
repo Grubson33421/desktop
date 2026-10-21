@@ -1,10 +1,18 @@
 import * as React from 'react'
-import moment from 'moment'
 
 import { IMatches } from '../../lib/fuzzy-find'
 
-import { Octicon, OcticonSymbol } from '../octicons'
+import { Octicon } from '../octicons'
+import * as octicons from '../octicons/octicons.generated'
 import { HighlightText } from '../lib/highlight-text'
+import { dragAndDropManager } from '../../lib/drag-and-drop-manager'
+import { DragType, DropTargetType } from '../../models/drag-drop'
+import { RelativeTime } from '../relative-time'
+import classNames from 'classnames'
+import { TooltippedContent } from '../lib/tooltipped-content'
+import { enableAccessibleListToolTips } from '../../lib/feature-flag'
+import { getPreferAbsoluteDates } from '../../models/formatting-preferences'
+import { formatDate } from '../../lib/format-date'
 
 interface IBranchListItemProps {
   /** The name of the branch */
@@ -13,36 +21,118 @@ interface IBranchListItemProps {
   /** Specifies whether this item is currently selected */
   readonly isCurrentBranch: boolean
 
-  /** The date may be null if we haven't loaded the tip commit yet. */
-  readonly lastCommitDate: Date | null
-
   /** The characters in the branch name to highlight */
   readonly matches: IMatches
+
+  readonly authorDate: Date | undefined
+
+  /** When a drag element has landed on a branch that is not current */
+  readonly onDropOntoBranch?: (branchName: string) => void
+
+  /** When a drag element has landed on the current branch */
+  readonly onDropOntoCurrentBranch?: () => void
+}
+
+interface IBranchListItemState {
+  /**
+   * Whether or not there's currently a draggable item being dragged
+   * on top of the branch item. We use this in order to disable pointer
+   * events when dragging.
+   */
+  readonly isDragInProgress: boolean
 }
 
 /** The branch component. */
-export class BranchListItem extends React.Component<IBranchListItemProps, {}> {
-  public render() {
-    const lastCommitDate = this.props.lastCommitDate
-    const isCurrentBranch = this.props.isCurrentBranch
-    const name = this.props.name
+export class BranchListItem extends React.Component<
+  IBranchListItemProps,
+  IBranchListItemState
+> {
+  public constructor(props: IBranchListItemProps) {
+    super(props)
+    this.state = { isDragInProgress: false }
+  }
 
-    const date = lastCommitDate ? moment(lastCommitDate).fromNow() : ''
-    const icon = isCurrentBranch ? OcticonSymbol.check : OcticonSymbol.gitBranch
-    const infoTitle = isCurrentBranch
-      ? 'Current branch'
-      : lastCommitDate
-      ? lastCommitDate.toString()
-      : ''
+  private onMouseEnter = () => {
+    if (dragAndDropManager.isDragInProgress) {
+      this.setState({ isDragInProgress: true })
+    }
+
+    if (dragAndDropManager.isDragOfTypeInProgress(DragType.Commit)) {
+      dragAndDropManager.emitEnterDropTarget({
+        type: DropTargetType.Branch,
+        branchName: this.props.name,
+      })
+    }
+  }
+
+  private onMouseLeave = () => {
+    this.setState({ isDragInProgress: false })
+
+    if (dragAndDropManager.isDragOfTypeInProgress(DragType.Commit)) {
+      dragAndDropManager.emitLeaveDropTarget()
+    }
+  }
+
+  private onMouseUp = () => {
+    const { onDropOntoBranch, onDropOntoCurrentBranch, name, isCurrentBranch } =
+      this.props
+
+    this.setState({ isDragInProgress: false })
+
+    if (!dragAndDropManager.isDragOfTypeInProgress(DragType.Commit)) {
+      return
+    }
+
+    if (onDropOntoBranch !== undefined && !isCurrentBranch) {
+      onDropOntoBranch(name)
+    }
+
+    if (onDropOntoCurrentBranch !== undefined && isCurrentBranch) {
+      onDropOntoCurrentBranch()
+    }
+  }
+
+  public render() {
+    const { authorDate, isCurrentBranch, name } = this.props
+
+    const icon = isCurrentBranch ? octicons.check : octicons.gitBranch
+    const className = classNames('branches-list-item', {
+      'drop-target': this.state.isDragInProgress,
+    })
+
     return (
-      <div className="branches-list-item">
+      /**
+       * This a11y linter is a false-positive as the element is a drop target
+       * facilitating our drag and drop functionality for cherry-picking.
+       */
+      // eslint-disable-next-line jsx-a11y/no-static-element-interactions
+      <div
+        className={className}
+        onMouseEnter={this.onMouseEnter}
+        onMouseLeave={this.onMouseLeave}
+        onMouseUp={this.onMouseUp}
+      >
         <Octicon className="icon" symbol={icon} />
-        <div className="name" title={name}>
+        <TooltippedContent
+          className="name"
+          tooltip={name}
+          onlyWhenOverflowed={true}
+          tagName="div"
+          disabled={enableAccessibleListToolTips()}
+        >
           <HighlightText text={name} highlight={this.props.matches.title} />
-        </div>
-        <div className="description" title={infoTitle}>
-          {date}
-        </div>
+        </TooltippedContent>
+        {authorDate &&
+          (getPreferAbsoluteDates() ? (
+            <span className="description">{formatDate(authorDate)}</span>
+          ) : (
+            <RelativeTime
+              className="description"
+              date={authorDate}
+              onlyRelative={true}
+              tooltip={!enableAccessibleListToolTips()}
+            />
+          ))}
       </div>
     )
   }

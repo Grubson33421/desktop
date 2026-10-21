@@ -1,3 +1,5 @@
+import { describe, it } from 'node:test'
+import assert from 'node:assert'
 import { groupBranches } from '../../src/ui/branches'
 import { Branch, BranchType } from '../../src/models/branch'
 import { CommitIdentity } from '../../src/models/commit-identity'
@@ -10,16 +12,29 @@ describe('Branches grouping', () => {
     author,
   }
 
-  const currentBranch = new Branch('master', null, branchTip, BranchType.Local)
-  const defaultBranch = new Branch('master', null, branchTip, BranchType.Local)
+  const currentBranch = new Branch(
+    'master',
+    null,
+    branchTip,
+    BranchType.Local,
+    ''
+  )
+  const defaultBranch = new Branch(
+    'master',
+    null,
+    branchTip,
+    BranchType.Local,
+    ''
+  )
   const recentBranches = [
-    new Branch('some-recent-branch', null, branchTip, BranchType.Local),
+    new Branch('some-recent-branch', null, branchTip, BranchType.Local, ''),
   ]
   const otherBranch = new Branch(
     'other-branch',
     null,
     branchTip,
-    BranchType.Local
+    BranchType.Local,
+    ''
   )
 
   const allBranches = [currentBranch, ...recentBranches, otherBranch]
@@ -31,18 +46,18 @@ describe('Branches grouping', () => {
       allBranches,
       recentBranches
     )
-    expect(groups).toHaveLength(3)
+    assert.equal(groups.length, 3)
 
-    expect(groups[0].identifier).toBe('default')
+    assert.equal(groups[0].identifier, 'default')
     let items = groups[0].items
-    expect(items[0].branch).toBe(defaultBranch)
+    assert.equal(items[0].branch, defaultBranch)
 
-    expect(groups[1].identifier).toBe('recent')
+    assert.equal(groups[1].identifier, 'recent')
     items = groups[1].items
-    expect(items[0].branch).toBe(recentBranches[0])
+    assert.equal(items[0].branch, recentBranches[0])
 
-    expect(groups[2].identifier).toBe('other')
+    assert.equal(groups[2].identifier, 'other')
     items = groups[2].items
-    expect(items[0].branch).toBe(otherBranch)
+    assert.equal(items[0].branch, otherBranch)
   })
 })
